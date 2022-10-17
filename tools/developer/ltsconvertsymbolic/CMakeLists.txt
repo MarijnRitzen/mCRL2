@@ -1,6 +1,8 @@
 add_mcrl2_tool(ltsconvertsymbolic
   SOURCES
     ltsconvertsymbolic.cpp
+    symbolic_lts_bdd.cpp
+    bdd_util.cpp
   DEPENDS
     mcrl2_lps
     mcrl2_lts
