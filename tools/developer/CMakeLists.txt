@@ -1,4 +1,5 @@
 set(MCRL2_TOOLS
+  bdd
   confcheck
   lps2ltsdeprecated
   lpstransform
