@@ -15,8 +15,14 @@
 #include "mcrl2/atermpp/aterm_appl.h"
 #include "mcrl2/atermpp/function_symbol.h"
 #include <cmath>
+#include <functional>
+#include <tuple>
+#include <unordered_map>
+#include <boost/functional/hash.hpp>
 
 using namespace atermpp;
+
+
 
 class TermBDD: public aterm_appl 
 {
@@ -50,7 +56,26 @@ public:
     {}
 };
 
-enum Operation { OR, AND, IMPLIES, BI_IMPLIES, XOR };
+enum Operation { OR, AND, IMPLIES, BI_IMPLIES, XOR, NEG };
+
+// Define the tuple type
+using KeyType = std::tuple<TermBDD, Operation, TermBDD>;
+
+struct KeyHash : public std::unary_function<KeyType, std::size_t>
+{
+    std::size_t operator()(const KeyType& k) const
+    {
+        std::size_t seed = 0;
+        boost::hash_combine(seed, &std::get<0>(k));
+        boost::hash_combine(seed, std::get<1>(k));
+        boost::hash_combine(seed, &std::get<2>(k));
+        return seed;
+    }
+};
+
+// Declare the global hash map using the custom hash function and key type
+// Define the global hash map
+std::unordered_map<KeyType, TermBDD, KeyHash> map;
 
 TermBDD neg(const TermBDD& bdd) {
     if (bdd.empty()) {
@@ -61,10 +86,20 @@ TermBDD neg(const TermBDD& bdd) {
         }
     } 
 
+    std::tuple tuple = std::make_tuple(bdd, Operation::NEG, bdd);
+
+    if (map.find(tuple) != map.end()) {
+        return map[tuple];
+    }
+
     TermBDD new_high = neg(vertical_cast<TermBDD>(bdd[0]));
     TermBDD new_low = neg(vertical_cast<TermBDD>(bdd[1]));
-    return TermBDD(bdd.function().name(), new_high, new_low);
+    TermBDD result = TermBDD(bdd.function().name(), new_high, new_low);
+    map[tuple] = result;
+    return result;
 }
+int total_found = 0;
+int total_not_found = 0;
 
 TermBDD apply(const TermBDD& left, Operation op, const TermBDD& right) {
     if (left.empty() && right.empty()) {
@@ -98,7 +133,14 @@ TermBDD apply(const TermBDD& left, Operation op, const TermBDD& right) {
         } else {
             return Zero();
         }
-    } 
+    }
+    std::tuple tuple = std::make_tuple(left, op, right);
+
+    if (map.find(tuple) != map.end()) {
+        total_found++;
+        return map[tuple];
+    }
+    total_not_found++;
 
     int result;
     if (right.empty()) 
@@ -112,25 +154,40 @@ TermBDD apply(const TermBDD& left, Operation op, const TermBDD& right) {
         TermBDD new_high = apply(vertical_cast<TermBDD>(left[0]), op, right);
         TermBDD new_low = apply(vertical_cast<TermBDD>(left[1]), op, right);
         if (new_high == new_low) {
+            map[tuple] = new_high;
+            map[std::make_tuple(right, op, left)] = new_high;
             return new_high;
         } else {
-            return TermBDD(left.function().name(), new_high, new_low);
+            TermBDD result = TermBDD(left.function().name(), new_high, new_low);
+            map[tuple] = result;
+            map[std::make_tuple(right, op, left)] = result;
+            return result;
         }
     } else if (result > 0) {
         TermBDD new_high = apply(left, op, vertical_cast<TermBDD>(right[0]));
         TermBDD new_low = apply(left, op, vertical_cast<TermBDD>(right[1]));
         if (new_high == new_low) {
+            map[tuple] = new_high;
+            map[std::make_tuple(right, op, left)] = new_high;
             return new_high;
         } else {
-            return TermBDD(right.function().name(), new_high, new_low);
+            TermBDD result = TermBDD(right.function().name(), new_high, new_low);
+            map[tuple] = result;
+            map[std::make_tuple(right, op, left)] = result;
+            return result;
         }
     } else {
         TermBDD new_high = apply(vertical_cast<TermBDD>(left[0]), op, vertical_cast<TermBDD>(right[0]));
         TermBDD new_low = apply(vertical_cast<TermBDD>(left[1]), op, vertical_cast<TermBDD>(right[1]));
         if (new_high == new_low) {
+            map[tuple] = new_high;
+            map[std::make_tuple(right, op, left)] = new_high;
             return new_high;
         } else {
-            return TermBDD(left.function().name(), new_high, new_low);
+            TermBDD result = TermBDD(right.function().name(), new_high, new_low);
+            map[tuple] = result;
+            map[std::make_tuple(right, op, left)] = result;
+            return result;
         }
     }
 }
@@ -174,7 +231,7 @@ void eight_queens_bdd(int board_size) {
                 rows_max[i] = apply(rows_max[i], Operation::AND, neg(apply(squares[i * board_size + j], Operation::AND, squares[i * board_size + k])));
             }
         }
-    }
+    }    
 
     std::vector<TermBDD> cols_min(board_size);
     std::vector<TermBDD> cols_max(board_size);
@@ -190,7 +247,7 @@ void eight_queens_bdd(int board_size) {
                 cols_max[j] = apply(cols_max[j], Operation::AND, neg(apply(squares[k * board_size + j], Operation::AND, squares[l * board_size + j])));
             }
         }
-    }
+    }    
 
     // At most 2 in every diagonal
     std::vector<TermBDD> diags((board_size * board_size - board_size) / 2);
@@ -199,7 +256,6 @@ void eight_queens_bdd(int board_size) {
         for (int i_prime = i + 1; i_prime < board_size; i_prime++) {
             One one;
             diags[index] = one;
-            std::cout << index << std::endl;
             for (int j = 0; j < board_size; j++) {
                 for (int j_prime = 0; j_prime < board_size; j_prime++) {
                     if ((i + j == i_prime + j_prime) || (i - j == i_prime - j_prime)) {
@@ -211,24 +267,27 @@ void eight_queens_bdd(int board_size) {
         }
     }
 
-    // Create the TermBDD for the constraints
     std::vector<TermBDD> constraints;
-    // constraints.insert(constraints.end(), rows_min.begin(), rows_min.end());
-    // constraints.insert(constraints.end(), rows_max.begin(), rows_max.end());
-    // constraints.insert(constraints.end(), cols_min.begin(), cols_min.end());
-    // constraints.insert(constraints.end(), cols_max.begin(), cols_max.end());
+    constraints.insert(constraints.end(), rows_min.begin(), rows_min.end());
+    constraints.insert(constraints.end(), rows_max.begin(), rows_max.end());
+    constraints.insert(constraints.end(), cols_min.begin(), cols_min.end());
+    constraints.insert(constraints.end(), cols_max.begin(), cols_max.end());
     constraints.insert(constraints.end(), diags.begin(), diags.end());
     TermBDD constraints_bdd = constraints[0];
     for (int i = 1; i < constraints.size(); i++) {
         constraints_bdd = apply(constraints_bdd, Operation::AND, constraints[i]);
     }
-
     std::cout << "solution: " << pp(constraints_bdd) << std::endl;
     std::cout << "nr solutions: " << get_nr_of_solutions(constraints_bdd, 0, board_size * board_size) << std::endl;
 }
 
+
 int main(int argc, char* argv[])
 {
-    eight_queens_bdd(2);
+    eight_queens_bdd(8);
+    std::cout << total_found << std::endl;
+    std::cout << total_not_found << std::endl;
+    
+    return 0;
 }
 
